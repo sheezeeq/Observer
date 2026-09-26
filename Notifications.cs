@@ -15,6 +15,13 @@ internal sealed class Settings
     public int Height { get; set; } = 85;
     public int Sensitivity { get; set; } = 50;
     public string ProtectedWebhook { get; set; } = "";
+    public string ProtectedTelegramToken { get; set; } = "";
+    public string TelegramChatId { get; set; } = "";
+    public string ProtectedVkToken { get; set; } = "";
+    public string VkPeerId { get; set; } = "";
+    public string PointName { get; set; } = "Фактория";
+    public CaptureMode CaptureMode { get; set; } = CaptureMode.Auto;
+    public bool AlertUnknownMotion { get; set; } = true;
     public static string Folder => Environment.GetEnvironmentVariable("OBSERVER_DATA_DIR") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Observer");
     public static string EventsFolder => Path.Combine(Folder, "events");
@@ -29,14 +36,18 @@ internal sealed class Settings
     public void Save()
     {
         Directory.CreateDirectory(Folder);
-        File.WriteAllText(PathName, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        string temporary = PathName + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(temporary, PathName, true);
     }
 }
 
-internal sealed record PendingAlert(string Id, string Text, byte[]? Image)
+internal enum ChannelKind { Discord, Telegram, Vk }
+
+internal sealed record PendingAlert(string Id, string Text, byte[]? Image, ChannelKind Channel = ChannelKind.Discord)
 {
-    public static PendingAlert Create(string text, byte[]? image) =>
-        new(DateTime.UtcNow.ToString("yyyyMMddHHmmssfff") + "-" + Guid.NewGuid().ToString("N")[..8], text, image);
+    public static PendingAlert Create(string text, byte[]? image, ChannelKind channel = ChannelKind.Discord) =>
+        new(DateTime.UtcNow.ToString("yyyyMMddHHmmssfff") + "-" + Guid.NewGuid().ToString("N")[..8], text, image, channel);
 }
 
 internal static class Outbox
@@ -45,7 +56,7 @@ internal static class Outbox
     public static IEnumerable<PendingAlert> Load()
     {
         if (!Directory.Exists(Folder)) yield break;
-        foreach (var file in Directory.GetFiles(Folder, "*.json").OrderBy(x => x).Take(50))
+        foreach (var file in Directory.GetFiles(Folder, "*.json").OrderBy(x => x).Take(150))
         {
             PendingAlert? alert = null;
             try { alert = JsonSerializer.Deserialize<PendingAlert>(File.ReadAllText(file)); }
@@ -56,7 +67,10 @@ internal static class Outbox
     public static void Save(PendingAlert alert)
     {
         Directory.CreateDirectory(Folder);
-        File.WriteAllText(Path.Combine(Folder, alert.Id + ".json"), JsonSerializer.Serialize(alert));
+        string target = Path.Combine(Folder, alert.Id + ".json");
+        string temporary = target + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(alert));
+        File.Move(temporary, target, true);
     }
     public static void Delete(PendingAlert alert)
     {
@@ -76,9 +90,10 @@ internal static class SecretStore
         nint reserved, nint prompt, int flags, out Blob output);
     [DllImport("kernel32.dll")] private static extern nint LocalFree(nint memory);
 
-    public static string Protect(string value) => Convert.ToBase64String(Transform(Encoding.UTF8.GetBytes(value), true));
+    public static string Protect(string value) => value.Length == 0 ? "" : Convert.ToBase64String(Transform(Encoding.UTF8.GetBytes(value), true));
     public static string Unprotect(string value)
     {
+        if (value.Length == 0) return "";
         try { return Encoding.UTF8.GetString(Transform(Convert.FromBase64String(value), false)); }
         catch { return ""; }
     }
@@ -91,9 +106,9 @@ internal static class SecretStore
         try
         {
             bool okay = protect
-                ? CryptProtectData(ref data, "Observer Discord webhook", 0, 0, 0, 0, out var output)
+                ? CryptProtectData(ref data, "Observer notification credentials", 0, 0, 0, 0, out var output)
                 : CryptUnprotectData(ref data, 0, 0, 0, 0, 0, out output);
-            if (!okay) throw new InvalidOperationException("Windows could not protect the Discord address (error " + Marshal.GetLastWin32Error() + ").");
+            if (!okay) throw new InvalidOperationException("Windows не смогла защитить данные канала (ошибка " + Marshal.GetLastWin32Error() + ").");
             try
             {
                 byte[] result = new byte[output.Length];
@@ -106,11 +121,18 @@ internal static class SecretStore
     }
 }
 
-internal sealed class DiscordNotifier : IDisposable
+internal interface IChannelNotifier : IDisposable
 {
-    private readonly HttpClient client = new() { Timeout = TimeSpan.FromSeconds(15) };
+    ChannelKind Kind { get; }
+    Task SendAsync(PendingAlert alert, CancellationToken cancellation);
+}
+
+internal sealed class DiscordNotifier : IChannelNotifier
+{
+    private readonly HttpClient client;
     private readonly Uri webhook;
-    public DiscordNotifier(string url)
+    public ChannelKind Kind => ChannelKind.Discord;
+    public DiscordNotifier(string url, HttpClient? client = null)
     {
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var address) ||
             address.Scheme != "https" ||
@@ -118,29 +140,36 @@ internal sealed class DiscordNotifier : IDisposable
             !address.AbsolutePath.StartsWith("/api/webhooks/", StringComparison.Ordinal))
             throw new ArgumentException("Нужна ссылка вебхука Discord вида https://discord.com/api/webhooks/...");
         webhook = address;
+        this.client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     }
 
-    public async Task SendAsync(string text, byte[]? png, CancellationToken cancellation)
+    public async Task SendAsync(PendingAlert alert, CancellationToken cancellation)
     {
-        for (int attempt = 0; attempt < 3; attempt++)
+        try
         {
-            using var form = new MultipartFormDataContent();
-            form.Add(new StringContent(JsonSerializer.Serialize(new { content = text, allowed_mentions = new { parse = Array.Empty<string>() } })), "payload_json");
-            if (png is not null)
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                var image = new ByteArrayContent(png);
-                image.Headers.ContentType = new MediaTypeHeaderValue("image/png");
-                form.Add(image, "files[0]", "observer.png");
+                using var form = new MultipartFormDataContent();
+                form.Add(new StringContent(JsonSerializer.Serialize(new { content = alert.Text, allowed_mentions = new { parse = Array.Empty<string>() } })), "payload_json");
+                if (alert.Image is not null)
+                {
+                    var image = new ByteArrayContent(alert.Image);
+                    image.Headers.ContentType = new MediaTypeHeaderValue(PhotoEncoding.Mime(alert.Image));
+                    form.Add(image, "files[0]", PhotoEncoding.FileName(alert.Image));
+                }
+                using var response = await client.PostAsync(webhook, form, cancellation);
+                if (response.IsSuccessStatusCode) return;
+                if (response.StatusCode == (HttpStatusCode)429 && attempt < 2)
+                {
+                    await Task.Delay(response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(3), cancellation);
+                    continue;
+                }
+                throw new HttpRequestException($"Discord вернул {(int)response.StatusCode} {response.ReasonPhrase}", null, response.StatusCode);
             }
-            using var response = await client.PostAsync(webhook, form, cancellation);
-            if (response.IsSuccessStatusCode) return;
-            if (response.StatusCode == (HttpStatusCode)429 && attempt < 2)
-            {
-                await Task.Delay(response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(3), cancellation);
-                continue;
-            }
-            throw new HttpRequestException($"Discord вернул {(int)response.StatusCode} {response.ReasonPhrase}");
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
+        catch (HttpRequestException ex) when (ex.StatusCode is not null) { throw; }
+        catch (Exception ex) { throw new InvalidOperationException("Discord: соединение недоступно.", ex); }
     }
 
     public void Dispose() => client.Dispose();

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Observer;
 
-internal sealed record Detection(Rectangle Bounds, int Pixels);
+internal sealed record Detection(Rectangle Bounds, int Pixels, string? Label = null, double Similarity = 0);
 
 internal sealed class MotionEngine
 {

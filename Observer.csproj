@@ -8,4 +8,10 @@
     <AssemblyName>Observer</AssemblyName>
     <RootNamespace>Observer</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="transport-model.json" LogicalName="Observer.transport-model.json" />
+    <None Include="yolox_nano.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="licenses/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0" />
+  </ItemGroup>
 </Project>

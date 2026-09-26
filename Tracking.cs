@@ -11,6 +11,8 @@ internal sealed class TrackedObject
     public bool Alerted;
     public double[]? Signature;
     public int ChangedFrames;
+    public string? Label;
+    public double Similarity;
 }
 
 internal sealed class Tracker
@@ -35,7 +37,7 @@ internal sealed class Tracker
                 .FirstOrDefault();
             if (match is null)
             {
-                tracks.Add(new TrackedObject { Bounds = item.Bounds, Seen = 1, LastSeen = now });
+                tracks.Add(new TrackedObject { Bounds = item.Bounds, Seen = 1, LastSeen = now, Label = item.Label, Similarity = item.Similarity });
             }
             else
             {
@@ -48,6 +50,7 @@ internal sealed class Tracker
                 else match.Bounds = UnionCompact(match.Bounds, item.Bounds);
                 match.Seen++;
                 match.LastSeen = now;
+                if (item.Label is not null) { match.Label = item.Label; match.Similarity = item.Similarity; }
             }
         }
         return tracks.Where(t => !t.Alerted && t.Seen >= 2 && now - t.LastSeen < TimeSpan.FromSeconds(3)
