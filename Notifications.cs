@@ -21,7 +21,7 @@ internal sealed class Settings
     public string VkPeerId { get; set; } = "";
     public string PointName { get; set; } = "Фактория";
     public CaptureMode CaptureMode { get; set; } = CaptureMode.Auto;
-    public bool AlertUnknownMotion { get; set; } = true;
+    public bool AlertUnknownMotion { get; set; } = false;
     public static string Folder => Environment.GetEnvironmentVariable("OBSERVER_DATA_DIR") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Observer");
     public static string EventsFolder => Path.Combine(Folder, "events");
