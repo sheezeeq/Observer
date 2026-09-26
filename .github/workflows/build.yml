@@ -15,6 +15,11 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Publish portable EXE
         run: dotnet publish Observer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o dist
+      - name: Package support files
+        shell: pwsh
+        run: |
+          Remove-Item dist/*.lib -ErrorAction SilentlyContinue
+          Copy-Item README.md,THIRD_PARTY_NOTICES.md dist/
       - name: Run synthetic scenario
         shell: pwsh
         run: |
@@ -23,4 +28,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Observer-win-x64
-          path: dist/Observer.exe
+          path: dist/
+
