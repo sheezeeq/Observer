@@ -35,6 +35,18 @@ internal static class SelfTest
                 }
             }
             if (!alerted || detections < 2) throw new Exception($"Moving object was missed: detections={detections}, alerted={alerted}");
+            var moving = new Detection(new Rectangle(50, 50, 60, 40), 300);
+            var vehicle = new VehicleBox(new Rectangle(45, 45, 70, 50), "Трактор", 0.7);
+            var nearby = new VehicleBox(new Rectangle(100, 45, 70, 50), "Фрегат", 0.9);
+            var confirmed = DetectionFusion.Match([moving], [nearby, vehicle], false);
+            if (confirmed.Count != 1 || confirmed[0].Label != "Трактор" || confirmed[0].Bounds != vehicle.Bounds)
+                throw new Exception("Motion was assigned to the wrong vehicle");
+            var edgeOnly = new Detection(new Rectangle(35, 55, 80, 40), 300);
+            if (DetectionFusion.Match([edgeOnly], [new VehicleBox(new Rectangle(105, 55, 80, 40), "Фрегат", 0.9)], false).Count != 0)
+                throw new Exception("Small edge overlap became a vehicle alert");
+            if (DetectionFusion.Match([moving], [], false).Count != 0 ||
+                DetectionFusion.Match([moving], [], true).Single().Label is not null)
+                throw new Exception("Unconfirmed motion became a named alert");
             var recognizer = new TransportRecognizer();
             if (recognizer.TemplateCount != 28) throw new Exception("The transport model did not load all templates");
             using (var featureFrame = MakeFrame(70))
