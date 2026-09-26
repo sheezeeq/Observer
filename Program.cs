@@ -21,12 +21,14 @@ internal static class Program
             Console.WriteLine(result is null ? "unknown" : $"{result.Label}: {result.Similarity:F3}");
             return;
         }
-        if (args.Length == 2 && args[0] == "--probe-detect")
+        if (args.Length is 2 or 3 && args[0] == "--probe-detect")
         {
             using var image = new Bitmap(args[1]);
             using var detector = new TransportDetector();
-            foreach (var vehicle in detector.Detect(image, new Rectangle(0, 0, image.Width, image.Height)))
-                Console.WriteLine($"{vehicle.Label}: {vehicle.Confidence:F3} {vehicle.Bounds}");
+            var lines = detector.Detect(image, new Rectangle(0, 0, image.Width, image.Height))
+                .Select(vehicle => $"{vehicle.Label}: {vehicle.Confidence:F3} {vehicle.Bounds}").ToArray();
+            if (args.Length == 3) File.WriteAllLines(args[2], lines);
+            else foreach (var line in lines) Console.WriteLine(line);
             return;
         }
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -73,7 +75,6 @@ internal sealed class MainForm : Form
     private readonly Label log = new() { AutoSize = false };
     private readonly MotionEngine motion = new();
     private readonly Tracker tracker = new();
-    private readonly TransportRecognizer recognizer = new();
     private TransportDetector? transportDetector;
     private readonly Queue<PendingAlert> pending = new();
     private CancellationTokenSource? running;
@@ -361,16 +362,7 @@ internal sealed class MainForm : Form
                         analysis = motion.Analyze(frame, area, sensitivity.Value);
                         var vehicles = analysis.Detections.Count > 0 && transportDetector is not null
                             ? transportDetector.Detect(frame, area) : [];
-                        detections = analysis.Detections.Select(item =>
-                        {
-                            var matching = vehicles.Select(box => (Box: box, Overlap: Rectangle.Intersect(box.Bounds, item.Bounds)))
-                                .Where(x => x.Overlap.Width * (double)x.Overlap.Height >= item.Bounds.Width * (double)item.Bounds.Height * 0.08)
-                                .OrderByDescending(x => x.Overlap.Width * (double)x.Overlap.Height).FirstOrDefault();
-                            if (matching.Box is not null)
-                                return new Detection(matching.Box.Bounds, item.Pixels, matching.Box.Label, matching.Box.Confidence);
-                            Recognition? identified = recognizer.Classify(frame, item.Bounds);
-                            return item with { Label = identified?.Label, Similarity = identified?.Similarity ?? 0 };
-                        }).GroupBy(x => x.Bounds).Select(x => x.First()).ToArray();
+                        detections = DetectionFusion.Match(analysis.Detections, vehicles, unknownMotion.Checked);
                         if (analysis.Dark) fault = "изображение почти полностью чёрное";
                         frozenSince = analysis.Frozen ? frozenSince ?? now : null;
                         if (frozenSince is not null && now - frozenSince > TimeSpan.FromSeconds(90)) fault = "изображение не меняется более 90 секунд";
@@ -380,8 +372,7 @@ internal sealed class MainForm : Form
                 if (fault is null && frame is not null && analysis is not null)
                 {
                     ShowLivePreview(frame, detections);
-                    var considered = unknownMotion.Checked ? detections : detections.Where(x => x.Label is not null).ToArray();
-                    var ready = tracker.Update(considered, frame, now);
+                    var ready = tracker.Update(detections, frame, now);
                     if (ready.Count > 0 && now - lastMovement > TimeSpan.FromSeconds(4))
                     {
                         tracker.MarkAttempt(ready, now);
